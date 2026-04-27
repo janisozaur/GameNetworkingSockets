@@ -73,6 +73,14 @@ public:
 
         // Open a P2P listen socket. Clients will connect via signaling.
         m_listen_socket = m_pInterface->CreateListenSocketP2P(0, 1, &opt);
+
+        // Validate that the listen socket was created successfully
+        if (m_listen_socket == k_HSteamListenSocket_Invalid) {
+            std::cerr << "Failed to create P2P listen socket (returned k_HSteamListenSocket_Invalid)" << std::endl;
+            m_is_server = false;
+            return;
+        }
+
         std::cout << "Server listening for P2P connections..." << std::endl;
     }
 
@@ -90,6 +98,13 @@ public:
 
         SteamDatagramErrMsg errMsg;
         ISteamNetworkingConnectionSignaling* pSignaling = m_pSignalingClient->CreateSignalingForConnection(server_id, errMsg);
+
+        // Validate that signaling was created successfully
+        if (!pSignaling) {
+            std::cerr << "Failed to create signaling for connection to " << server_identity << ": " << errMsg << std::endl;
+            m_connection = k_HSteamNetConnection_Invalid;
+            return;
+        }
 
         m_connection = m_pInterface->ConnectP2PCustomSignaling(pSignaling, &server_id, 0, 1, &opt);
         std::cout << "Connecting to server: " << server_identity << std::endl;

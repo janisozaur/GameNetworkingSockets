@@ -25,6 +25,8 @@
 #define DEFAULT_PORT 10000
 #define MAX_CLIENTS 1024
 #define BUFFER_SIZE 4096
+#define MAX_READ_BUFFER_BYTES (1024 * 1024)  // 1 MB max read buffer per client
+#define MAX_WRITE_BUFFER_BYTES (1024 * 1024) // 1 MB max write buffer per client
 
 struct Client {
     int fd;
@@ -200,6 +202,14 @@ private:
         }
 
         Client& client = it->second;
+
+        // Check read buffer limit before appending
+        if (client.read_buffer.size() + n > MAX_READ_BUFFER_BYTES) {
+            std::cerr << "Read buffer limit exceeded for client fd=" << fd << ", disconnecting" << std::endl;
+            DisconnectClient(fd);
+            return;
+        }
+
         client.read_buffer.append(buf, n);
 
         size_t pos;
@@ -246,7 +256,18 @@ private:
             auto dest_it = m_clients.find(it->second);
             if (dest_it != m_clients.end()) {
                 Client& dest_client = dest_it->second;
-                dest_client.write_buffer += client.identity + " " + payload + "\n";
+                std::string forward_msg = client.identity + " " + payload + "\n";
+
+                // Check write buffer limit before appending
+                if (dest_client.write_buffer.size() + forward_msg.size() > MAX_WRITE_BUFFER_BYTES) {
+                    std::cerr << "Write buffer limit exceeded for destination " << dest_identity
+                              << ", dropping message from " << client.identity << std::endl;
+                    // Apply backpressure: disconnect the sender to prevent unbounded growth
+                    DisconnectClient(client.fd);
+                    return;
+                }
+
+                dest_client.write_buffer += forward_msg;
                 std::cout << "Forwarding: " << client.identity << " -> " << dest_identity << " (" << payload.size() << " bytes)" << std::endl;
             }
         } else {
@@ -263,7 +284,7 @@ private:
 
         ssize_t n = send(fd, client.write_buffer.data(), client.write_buffer.size(), 0);
         if (n < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                 DisconnectClient(fd);
             }
             return;
