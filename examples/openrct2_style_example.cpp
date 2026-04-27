@@ -79,7 +79,11 @@ public:
     void ConnectToServer(const char* server_identity) {
         m_is_server = false;
         SteamNetworkingIdentity server_id;
-        server_id.ParseString(server_identity);
+        if (!server_id.ParseString(server_identity)) {
+            std::cerr << "Failed to parse server identity: " << server_identity << std::endl;
+            m_connection = k_HSteamNetConnection_Invalid;
+            return;
+        }
 
         SteamNetworkingConfigValue_t opt;
         opt.SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged, (void*)OnStatusChangedStatic);

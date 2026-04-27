@@ -109,6 +109,9 @@ public:
 
             int ret = poll(poll_fds.data(), poll_fds.size(), -1);
             if (ret < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
                 perror("poll");
                 break;
             }
@@ -184,7 +187,14 @@ private:
 
         char buf[BUFFER_SIZE];
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
-        if (n <= 0) {
+        if (n == 0) {
+            DisconnectClient(fd);
+            return;
+        }
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                return;
+            }
             DisconnectClient(fd);
             return;
         }

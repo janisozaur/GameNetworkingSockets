@@ -33,6 +33,7 @@ To support a full P2P-capable deployment, you need the following infrastructure:
 4. **Master Server**: Your existing server listing service, which now needs to store and distribute `SteamNetworkingIdentity` strings.
 
 ### Port Requirements
+
 | Service | Protocol | Default Port | Requirement |
 |---------|----------|--------------|-------------|
 | Game Server | UDP | 11753 | Only if not using P2P/Signaling |
