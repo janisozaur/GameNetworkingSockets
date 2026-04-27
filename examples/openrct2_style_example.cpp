@@ -17,6 +17,8 @@
 #include <thread>
 #include <chrono>
 #include <mutex>
+#include <cstring>
+#include <arpa/inet.h>
 #include <steam/isteamnetworkingsockets.h>
 #include <steam/steamnetworkingsockets.h>
 #include <steam/isteamnetworkingutils.h>
@@ -34,9 +36,12 @@ struct GameCommand {
 
 class GameNetworkManager {
 public:
-    GameNetworkManager() {
+    GameNetworkManager(const char* identity) {
+        SteamNetworkingIdentity self;
+        self.SetGenericString(identity);
+
         SteamDatagramErrMsg errMsg;
-        if (!GameNetworkingSockets_Init(nullptr, errMsg)) {
+        if (!GameNetworkingSockets_Init(&self, errMsg)) {
             std::cerr << "Failed to init GameNetworkingSockets: " << errMsg << std::endl;
             exit(1);
         }
@@ -44,16 +49,16 @@ public:
     }
 
     ~GameNetworkManager() {
+        // Release the signaling client (created by CreateTrivialSignalingClient) before shutting down
+        if (m_pSignalingClient) {
+            m_pSignalingClient->Release();
+            m_pSignalingClient = nullptr;
+        }
         GameNetworkingSockets_Kill();
     }
 
-    void InitSignaling(const char* identity, const char* signaling_server_addr) {
-        // In the standalone library, the identity is usually set during initialization.
-        // For custom identities, we can use the signaling system to identify peers.
-        SteamNetworkingIdentity self;
-        self.SetGenericString(identity);
-
-        SteamNetworkingErrMsg errMsg;
+    void InitSignaling(const char* signaling_server_addr) {
+        SteamDatagramErrMsg errMsg;
         m_pSignalingClient = CreateTrivialSignalingClient(signaling_server_addr, m_pInterface, errMsg);
         if (!m_pSignalingClient) {
             std::cerr << "Failed to connect to signaling server: " << errMsg << std::endl;
@@ -79,7 +84,7 @@ public:
         SteamNetworkingConfigValue_t opt;
         opt.SetPtr(k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged, (void*)OnStatusChangedStatic);
 
-        SteamNetworkingErrMsg errMsg;
+        SteamDatagramErrMsg errMsg;
         ISteamNetworkingConnectionSignaling* pSignaling = m_pSignalingClient->CreateSignalingForConnection(server_id, errMsg);
 
         m_connection = m_pInterface->ConnectP2PCustomSignaling(pSignaling, &server_id, 0, 1, &opt);
@@ -95,10 +100,16 @@ public:
     void SendCommand(const GameCommand& cmd) {
         // In a deterministic simulation, commands must be reliable and ordered.
         // We use ReliableNoNagle to ensure they are sent immediately at the end of a tick.
+        // Packet format: [tick:uint32_be, player_id:uint32_be, command_data:bytes]
         std::string packet;
-        packet.append((char*)&cmd.tick, 4);
-        packet.append((char*)&cmd.player_id, 4);
-        packet.append(cmd.command_data);
+        packet.resize(8 + cmd.command_data.size());
+
+        // Serialize fields in network byte order (big-endian) to be endian-safe
+        uint32_t tick_be = htonl(cmd.tick);
+        uint32_t player_id_be = htonl(cmd.player_id);
+        memcpy(&packet[0], &tick_be, 4);
+        memcpy(&packet[4], &player_id_be, 4);
+        memcpy(&packet[8], cmd.command_data.data(), cmd.command_data.size());
 
         if (m_is_server) {
             for (auto const& [conn, info] : m_clients) {
@@ -169,16 +180,36 @@ private:
 
     void HandleMessage(SteamNetworkingMessage_t* pMsg) {
         if (pMsg->m_cbSize < 8) return;
-        uint32_t tick = *(uint32_t*)pMsg->m_pData;
-        uint32_t player_id = *(uint32_t*)((char*)pMsg->m_pData + 4);
+
+        // Deserialize fields from network byte order (big-endian) to avoid alignment and endianness issues
+        // Packet format: [tick:uint32_be, player_id:uint32_be, command_data:bytes]
+        uint32_t tick_be, player_id_be;
+        memcpy(&tick_be, pMsg->m_pData, 4);
+        memcpy(&player_id_be, (char*)pMsg->m_pData + 4, 4);
+        uint32_t tick = ntohl(tick_be);
+        uint32_t player_id = ntohl(player_id_be);
         std::string data((char*)pMsg->m_pData + 8, pMsg->m_cbSize - 8);
 
         std::cout << "Received Command: Tick=" << tick << " Player=" << player_id << " Data=" << data << std::endl;
 
-        // If server, broadcast to other clients
+        // If server, rebroadcast to all other clients (skip the origin client)
         if (m_is_server) {
             GameCommand cmd = {tick, player_id, data};
-            // Logic to broadcast to others would go here
+            // Serialize the command once for rebroadcast
+            std::string packet;
+            packet.resize(8 + cmd.command_data.size());
+            uint32_t tick_out = htonl(cmd.tick);
+            uint32_t player_id_out = htonl(cmd.player_id);
+            memcpy(&packet[0], &tick_out, 4);
+            memcpy(&packet[4], &player_id_out, 4);
+            memcpy(&packet[8], cmd.command_data.data(), cmd.command_data.size());
+
+            // Iterate over all clients and skip the sender
+            for (auto const& [conn, info] : m_clients) {
+                if (conn != pMsg->m_conn) {
+                    m_pInterface->SendMessageToConnection(conn, packet.data(), packet.size(), k_nSteamNetworkingSend_ReliableNoNagle, nullptr);
+                }
+            }
         }
     }
 };
@@ -191,15 +222,17 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    GameNetworkManager mgr;
+    std::string role = argv[1];
+    const char* identity = (role == "server") ? "generic:server" : "generic:client1";
+
+    GameNetworkManager mgr(identity);
     GameNetworkManager::s_instance = &mgr;
 
-    std::string role = argv[1];
     if (role == "server") {
-        mgr.InitSignaling("generic:server", "127.0.0.1:10000");
+        mgr.InitSignaling("127.0.0.1:10000");
         mgr.StartServer();
     } else {
-        mgr.InitSignaling("generic:client1", "127.0.0.1:10000");
+        mgr.InitSignaling("127.0.0.1:10000");
         mgr.ConnectToServer("generic:server");
     }
 

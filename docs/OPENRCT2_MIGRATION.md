@@ -165,6 +165,10 @@ serverID.ParseString("generic:server_identity_from_master_server");
 auto* pSignaling = m_pSignalingClient->CreateSignalingForConnection(serverID, errMsg);
 
 // 3. Connect
+// Note: You must configure k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged via a
+// SteamNetworkingConfigValue_t to observe Connecting/Connected/Closed transitions.
+// See examples/openrct2_style_example.cpp (ConnectToServer method) for the full callback wiring
+// with ConnectP2PCustomSignaling and k_ESteamNetworkingConfig_Callback_ConnectionStatusChanged.
 m_hConn = m_pInterface->ConnectP2PCustomSignaling(pSignaling, &serverID, 0, 0, nullptr);
 ```
 

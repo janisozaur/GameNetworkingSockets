@@ -14,6 +14,7 @@
 #include <map>
 #include <algorithm>
 #include <cstring>
+#include <errno.h>
 #include <poll.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -40,9 +41,11 @@ public:
     }
 
     bool Start() {
+        int family = AF_INET6;
         m_listen_fd = socket(AF_INET6, SOCK_STREAM, 0);
         if (m_listen_fd < 0) {
             // Fallback to IPv4 if IPv6 fails
+            family = AF_INET;
             m_listen_fd = socket(AF_INET, SOCK_STREAM, 0);
             if (m_listen_fd < 0) {
                 perror("socket");
@@ -57,15 +60,28 @@ public:
         setsockopt(m_listen_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
         SetNonBlocking(m_listen_fd);
 
-        sockaddr_in6 addr;
-        memset(&addr, 0, sizeof(addr));
-        addr.sin6_family = AF_INET6;
-        addr.sin6_port = htons(m_port);
-        addr.sin6_addr = in6addr_any;
+        if (family == AF_INET6) {
+            sockaddr_in6 addr;
+            memset(&addr, 0, sizeof(addr));
+            addr.sin6_family = AF_INET6;
+            addr.sin6_port = htons(m_port);
+            addr.sin6_addr = in6addr_any;
 
-        if (bind(m_listen_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            perror("bind");
-            return false;
+            if (bind(m_listen_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+                perror("bind");
+                return false;
+            }
+        } else {
+            sockaddr_in addr;
+            memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(m_port);
+            addr.sin_addr.s_addr = INADDR_ANY;
+
+            if (bind(m_listen_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+                perror("bind");
+                return false;
+            }
         }
 
         if (listen(m_listen_fd, 10) < 0) {
@@ -98,18 +114,29 @@ public:
             }
 
             for (size_t i = 0; i < poll_fds.size(); ++i) {
-                if (poll_fds[i].revents & POLLIN) {
-                    if (poll_fds[i].fd == m_listen_fd) {
+                int fd = poll_fds[i].fd;
+                if (fd == m_listen_fd) {
+                    if (poll_fds[i].revents & POLLIN) {
                         AcceptClient();
-                    } else {
-                        ReadClient(poll_fds[i].fd);
                     }
-                }
-                if (poll_fds[i].revents & POLLOUT) {
-                    WriteClient(poll_fds[i].fd);
-                }
-                if (poll_fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
-                    DisconnectClient(poll_fds[i].fd);
+                } else {
+                    // Check if client still exists before handling events
+                    if (m_clients.find(fd) == m_clients.end()) {
+                        continue;
+                    }
+
+                    bool handled = false;
+                    if (poll_fds[i].revents & POLLIN) {
+                        ReadClient(fd);
+                        handled = true;
+                    } else if (poll_fds[i].revents & POLLOUT) {
+                        WriteClient(fd);
+                        handled = true;
+                    }
+
+                    if (!handled && (poll_fds[i].revents & (POLLERR | POLLHUP | POLLNVAL))) {
+                        DisconnectClient(fd);
+                    }
                 }
             }
         }
@@ -139,19 +166,22 @@ private:
 
     void DisconnectClient(int fd) {
         auto it = m_clients.find(fd);
-        if (it != m_clients.end()) {
-            if (it->second.identity_received) {
-                m_identity_to_fd.erase(it->second.identity);
-                std::cout << "Client '" << it->second.identity << "' disconnected" << std::endl;
-            } else {
-                std::cout << "Unidentified client disconnected, fd=" << fd << std::endl;
-            }
-            close(fd);
-            m_clients.erase(it);
+        if (it == m_clients.end()) return; // Already disconnected, idempotent
+
+        if (it->second.identity_received) {
+            m_identity_to_fd.erase(it->second.identity);
+            std::cout << "Client '" << it->second.identity << "' disconnected" << std::endl;
+        } else {
+            std::cout << "Unidentified client disconnected, fd=" << fd << std::endl;
         }
+        close(fd);
+        m_clients.erase(it);
     }
 
     void ReadClient(int fd) {
+        auto it = m_clients.find(fd);
+        if (it == m_clients.end()) return;
+
         char buf[BUFFER_SIZE];
         ssize_t n = recv(fd, buf, sizeof(buf), 0);
         if (n <= 0) {
@@ -159,7 +189,7 @@ private:
             return;
         }
 
-        Client& client = m_clients[fd];
+        Client& client = it->second;
         client.read_buffer.append(buf, n);
 
         size_t pos;
@@ -172,6 +202,8 @@ private:
             } else {
                 HandleForward(client, line);
             }
+            // Re-check if client still exists after handling
+            if (m_clients.find(fd) == m_clients.end()) return;
         }
     }
 
@@ -201,16 +233,22 @@ private:
 
         auto it = m_identity_to_fd.find(dest_identity);
         if (it != m_identity_to_fd.end()) {
-            Client& dest_client = m_clients[it->second];
-            dest_client.write_buffer += client.identity + " " + payload + "\n";
-            std::cout << "Forwarding: " << client.identity << " -> " << dest_identity << " (" << payload.size() << " bytes)" << std::endl;
+            auto dest_it = m_clients.find(it->second);
+            if (dest_it != m_clients.end()) {
+                Client& dest_client = dest_it->second;
+                dest_client.write_buffer += client.identity + " " + payload + "\n";
+                std::cout << "Forwarding: " << client.identity << " -> " << dest_identity << " (" << payload.size() << " bytes)" << std::endl;
+            }
         } else {
             std::cout << "Destination not found: " << dest_identity << std::endl;
         }
     }
 
     void WriteClient(int fd) {
-        Client& client = m_clients[fd];
+        auto it = m_clients.find(fd);
+        if (it == m_clients.end()) return;
+
+        Client& client = it->second;
         if (client.write_buffer.empty()) return;
 
         ssize_t n = send(fd, client.write_buffer.data(), client.write_buffer.size(), 0);
