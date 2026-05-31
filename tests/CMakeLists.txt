@@ -13,6 +13,13 @@ add_executable(
 	test_connection.cpp)
 set_target_common_gns_properties( test_connection )
 target_link_libraries(test_connection ${GAMENETWORKINGSOCKETS_LIB})
+
+add_executable(
+	test_repro_sentinel
+	test_common.cpp
+	test_repro_sentinel.cpp)
+set_target_common_gns_properties( test_repro_sentinel )
+target_link_libraries(test_repro_sentinel ${GAMENETWORKINGSOCKETS_LIB})
 add_sanitizers(test_connection)
 add_test(NAME connection_quick COMMAND test_connection suite-quick WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 add_test(NAME connection_soak  COMMAND test_connection soak  WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
