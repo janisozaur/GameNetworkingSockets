@@ -57,3 +57,14 @@ if(ENABLE_ICE)
 	add_custom_target( publish_test_script ALL DEPENDS ${P2P_TEST_SCRIPT} ${STUN_SERVER_SCRIPT} )
 	add_test(NAME p2p COMMAND ${P2P_TEST_SCRIPT} WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 endif()
+
+add_executable(
+	test_repro_sentinel
+	test_common.cpp
+	test_repro_sentinel.cpp)
+set_target_common_gns_properties( test_repro_sentinel )
+target_include_directories(test_repro_sentinel PRIVATE ../src ../src/public ../src/common ../src/steamnetworkingsockets/clientlib ../include ${CMAKE_BINARY_DIR}/src)
+target_compile_definitions(test_repro_sentinel PRIVATE STEAMNETWORKINGSOCKETS_STATIC_LINK)
+target_link_libraries(test_repro_sentinel ${GAMENETWORKINGSOCKETS_LIB})
+add_sanitizers(test_repro_sentinel)
+add_test(NAME repro_sentinel COMMAND test_repro_sentinel WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
