@@ -1493,39 +1493,8 @@ bool CSteamNetworkConnectionBase::ProcessPlainTextDataChunk( int usecTimeSinceLa
 
 	// Packet can be processed further
 	return true;
-}
 
-void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
-{
-	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
-}
-
-void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
-{
-	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
-}
-
-void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
-{
-	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
-}
-
-void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
-{
-	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
-}
-
-void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
-{
-	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
-}
-
-void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
-{
-	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
-}
-
-namespace {
+	// Make sure these don't get used beyond where we intended them to get used
 	#undef DECODE_ERROR
 	#undef EXPECT_BYTES
 	#undef READ_8BITU
