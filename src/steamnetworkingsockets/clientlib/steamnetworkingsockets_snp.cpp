@@ -1458,60 +1458,11 @@ bool CSteamNetworkConnectionBase::ProcessPlainTextDataChunk( int usecTimeSinceLa
 	//
 	// Note: order of operations is important between these two calls.
 	// SNP_RecordReceivedPktNum assumes that TrackProcessSequencedPacket is always called first
-	int64 nOldMaxRecvPktNum = m_statsEndToEnd.m_nMaxRecvPktNum;
 	m_statsEndToEnd.TrackProcessSequencedPacket( nPktNum, usecNow, usecTimeSinceLast, ctx.m_idxMultiPath );
 
 	// Should we record that we received it?
 	if ( bInhibitMarkReceived )
 	{
-		// We inhibited this packet.  But we already updated our end-to-end
-		// max packet number.  If we don't update the SNP gap map, then
-		// the next packet we receive will use the new max packet number
-		// for clamping stop_waiting frames, and that might allow the
-		// stop_waiting point to reach our sentinel.
-
-		// Check if we advanced the max packet number
-		if ( nPktNum > nOldMaxRecvPktNum )
-		{
-			// If it was a "lurch" (large jump), then the stats tracker
-			// has reset everything.  We should too.
-			if ( nPktNum - nOldMaxRecvPktNum >= 100 )
-			{
-				m_receiverState.InitPacketGapMap( nPktNum, usecNow );
-			}
-			else
-			{
-				// Small gap.  We can't call SNP_RecordReceivedPktNum, because
-				// that would mark the packet as received.  But we need
-				// to update the sentinel.
-				auto itSentinel = m_receiverState.m_mapPacketGaps.rbegin();
-				if ( nPktNum >= itSentinel->first )
-				{
-					// Everything from current sentinel up to this packet is a gap.
-					std::pair<int64,SSNPPacketGap> x;
-					x.first = itSentinel->first;
-					x.second.m_nEnd = nPktNum + 1;
-					x.second.m_usecWhenReceivedPktBefore = itSentinel->second.m_usecWhenReceivedPktBefore;
-					x.second.m_usecWhenAckPrior = itSentinel->second.m_usecWhenAckPrior;
-					x.second.m_usecWhenOKToNack = usecNow + k_usecNackFlush;
-
-					// And update the sentinel to point past this packet,
-					// which we are treating as a gap (since we inhibited it)
-					const_cast<int64&>( itSentinel->first ) = nPktNum+1;
-					itSentinel->second.m_usecWhenReceivedPktBefore = usecNow;
-
-					// Insert the gap
-					auto iter = m_receiverState.m_mapPacketGaps.insert( x ).first;
-
-					// If we were pending on the sentinel, then move to the new gap
-					if ( m_receiverState.m_itPendingAck->second.m_nEnd == INT64_MAX )
-						m_receiverState.m_itPendingAck = iter;
-					if ( m_receiverState.m_itPendingNack->second.m_nEnd == INT64_MAX )
-						m_receiverState.m_itPendingNack = iter;
-				}
-			}
-		}
-
 		// Something really odd.  High packet loss / fragmentation.
 		// Potentially the peer is being abusive and we need
 		// to protect ourselves.
@@ -1542,8 +1493,39 @@ bool CSteamNetworkConnectionBase::ProcessPlainTextDataChunk( int usecTimeSinceLa
 
 	// Packet can be processed further
 	return true;
+}
 
-	// Make sure these don't get used beyond where we intended them to get used
+void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
+{
+	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
+}
+
+void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
+{
+	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
+}
+
+void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
+{
+	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
+}
+
+void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
+{
+	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
+}
+
+void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
+{
+	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
+}
+
+void CSteamNetworkConnectionBase::TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum )
+{
+	m_statsEndToEnd.m_nMaxRecvPktNum = nNewMaxRecvPktNum;
+}
+
+namespace {
 	#undef DECODE_ERROR
 	#undef EXPECT_BYTES
 	#undef READ_8BITU

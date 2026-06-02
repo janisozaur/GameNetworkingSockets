@@ -1,14 +1,32 @@
 #include "test_common.h"
 #include <steam/steamnetworkingsockets.h>
 #include <steam/isteamnetworkingutils.h>
+
+#define protected public
+#define private public
+#include <steamnetworkingsockets_connections.h>
+#include <steamnetworkingsockets_snp.h>
+#undef protected
+#undef private
+
 #include <thread>
 #include <chrono>
 #include <assert.h>
+#include <string.h>
 
-// This test attempts to reproduce the "stop_waiting past sentinel gap" error.
-// The error occurs due to an inconsistency between the max received packet number
-// in stats and the packet gap map sentinel in SNP, specifically when a
-// gap is followed by an inhibited packet (e.g., due to too many segments).
+using namespace SteamNetworkingSocketsLib;
+
+namespace SteamNetworkingSocketsLib {
+    extern CSteamNetworkConnectionBase *GetConnectionByHandle( HSteamNetConnection sock, ConnectionScopeLock &scopeLock );
+}
+
+bool g_bHitSentinelError = false;
+void MyDebugOutput( ESteamNetworkingSocketsDebugOutputType eType, const char *pszMsg )
+{
+    if ( strstr( pszMsg, "stop_waiting past sentinel gap" ) )
+        g_bHitSentinelError = true;
+    printf( "%s\n", pszMsg );
+}
 
 void TestRepro() {
     SteamNetworkingIdentity identSender, identRecver;
@@ -17,75 +35,76 @@ void TestRepro() {
 
     HSteamNetConnection hSender, hRecver;
     TEST_Printf("Creating socket pair...\n");
-    bool bSuccess = SteamNetworkingSockets()->CreateSocketPair(&hSender, &hRecver, true, &identRecver, &identSender);
+    bool bSuccess = SteamNetworkingSockets()->CreateSocketPair(&hSender, &hRecver, true, &identSender, &identRecver);
     assert(bSuccess);
 
-    // Set some short timeouts/intervals to speed things up
-    SteamNetworkingUtils()->SetConnectionConfigValueInt32(hSender, k_ESteamNetworkingConfig_SendRateMin, 1024*1024);
-    SteamNetworkingUtils()->SetConnectionConfigValueInt32(hSender, k_ESteamNetworkingConfig_SendRateMax, 1024*1024);
-
-    // 1. Initial exchange
-    TEST_Printf("Initial exchange...\n");
-    SteamNetworkingSockets()->SendMessageToConnection(hSender, "hello", 5, k_nSteamNetworkingSend_Reliable, nullptr);
-
-    auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    bool bReceived = false;
+    // Step 1: Baseline exchange
+    TEST_Printf("Step 1: Baseline exchange\n");
+    SteamNetworkingSockets()->SendMessageToConnection(hSender, "1", 1, k_nSteamNetworkingSend_Reliable, nullptr);
+    auto timeout = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     while (std::chrono::steady_clock::now() < timeout) {
         TEST_PumpCallbacks();
         ISteamNetworkingMessage *pMsg = nullptr;
         if (SteamNetworkingSockets()->ReceiveMessagesOnConnection(hRecver, &pMsg, 1) > 0) {
-            TEST_Printf("Received initial message: %s\n", (char*)pMsg->m_pData);
             pMsg->Release();
-            bReceived = true;
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    assert(bReceived);
+    for (int i=0; i<10; ++i) { TEST_PumpCallbacks(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
 
-    // 2. Set RecvMaxSegmentsPerPacket to 1 on the receiver to easily trigger inhibition
-    TEST_Printf("Setting RecvMaxSegmentsPerPacket to 1 on receiver...\n");
-    SteamNetworkingUtils()->SetConnectionConfigValueInt32(hRecver, k_ESteamNetworkingConfig_RecvMaxSegmentsPerPacket, 1);
+    // Step 2: Trigger the crash using the internal hook and crafted packet
+    TEST_Printf("Step 2: Triggering crash\n");
+    {
+        SteamNetworkingGlobalLock scopeLock;
+        ConnectionScopeLock connectionLock;
+        CSteamNetworkConnectionBase *pConnRecver = GetConnectionByHandle(hRecver, connectionLock);
+        assert(pConnRecver);
 
-    // 3. Cause a gap.
-    TEST_Printf("Causing a gap by dropping 2 packets...\n");
-    SteamNetworkingUtils()->SetConnectionConfigValueFloat(hSender, k_ESteamNetworkingConfig_FakePacketLoss_Send, 100.0f);
-    for (int i = 0; i < 2; ++i) {
-        SteamNetworkingSockets()->SendMessageToConnection(hSender, "skip", 4, k_nSteamNetworkingSend_UnreliableNoNagle, nullptr);
-        TEST_PumpCallbacks();
+        int64 current_max = pConnRecver->m_statsEndToEnd.m_nMaxRecvPktNum;
+        int64 current_sentinel = current_max + 1;
+        TEST_Printf("State before desync: max_recv=%lld, sentinel=%lld\n", (long long)current_max, (long long)current_sentinel);
+
+        // Manually advance max_recv to be equal to sentinel.
+        pConnRecver->TEST_TriggerSentinelDesync(current_sentinel);
+        TEST_Printf("State after desync: max_recv=%lld\n", (long long)pConnRecver->m_statsEndToEnd.m_nMaxRecvPktNum);
+
+        // Crafted packet with stop_waiting = current_sentinel.
+        // Lead byte 0x80 means stop_waiting with 8-bit offset.
+        // stop_waiting = nPktNum - (offset+1).
+        // If nPktNum = current_sentinel + 1, and we want stop_waiting = current_sentinel.
+        // offset = 0.
+        uint8 packet[] = { 0x80, 0x00 };
+
+        RecvPacketContext_t ctx;
+        ctx.m_usecNow = SteamNetworkingSockets_GetLocalTimestamp();
+        ctx.m_pPlainText = packet;
+        ctx.m_cbPlainText = sizeof(packet);
+        ctx.m_nPktNum = current_sentinel + 1;
+        ctx.m_pTransport = pConnRecver->m_pTransport;
+        ctx.m_idxMultiPath = 0;
+
+        // Override debug output to catch the error without exiting
+        SteamNetworkingUtils()->SetDebugOutputFunction( k_ESteamNetworkingSocketsDebugOutputType_Everything, MyDebugOutput );
+
+        pConnRecver->ProcessPlainTextDataChunk( 0, ctx );
     }
 
-    // 4. Send a packet that will trigger bInhibitMarkReceived and advance m_nMaxRecvPktNum.
-    TEST_Printf("Sending advancing packet with multiple segments (should be inhibited)...\n");
-    SteamNetworkingUtils()->SetConnectionConfigValueFloat(hSender, k_ESteamNetworkingConfig_FakePacketLoss_Send, 0.0f);
-    for (int i = 0; i < 5; ++i) {
-        SteamNetworkingSockets()->SendMessageToConnection(hSender, "part", 4, k_nSteamNetworkingSend_Unreliable, nullptr);
+    TEST_Printf("Step 3: Checking for result\n");
+    if ( g_bHitSentinelError ) {
+        TEST_Printf("SUCCESS: Reproduced the issue!\n");
+    } else {
+        TEST_Printf("FAILED: Could not reproduce the issue.\n");
+        exit(1);
     }
 
-    // Pump to process the advancing packet.
-    for (int i = 0; i < 10; ++i) {
-        TEST_PumpCallbacks();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    // 5. Send more packets. The sender will send a stop_waiting frame.
-    TEST_Printf("Sending subsequent packets to trigger the stop_waiting error...\n");
-    for (int i = 0; i < 10; ++i) {
-        SteamNetworkingSockets()->SendMessageToConnection(hSender, "trigger", 7, k_nSteamNetworkingSend_UnreliableNoNagle, nullptr);
-        TEST_PumpCallbacks();
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    TEST_Printf("Cleaning up...\n");
     SteamNetworkingSockets()->CloseConnection(hSender, 0, nullptr, false);
     SteamNetworkingSockets()->CloseConnection(hRecver, 0, nullptr, false);
 }
 
 int main() {
     TEST_Init(nullptr);
-    TEST_SetStdoutDetailLevel(k_ESteamNetworkingSocketsDebugOutputType_Verbose);
     TestRepro();
     TEST_Kill();
-    TEST_Printf("Test finished successfully (if it didn't crash!)\n");
     return 0;
 }

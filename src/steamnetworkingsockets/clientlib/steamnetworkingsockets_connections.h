@@ -568,6 +568,10 @@ public:
 	/// Decode the plaintext.  Returns false if the packet seems corrupt or bogus, or should abort further
 	/// processing.
 	bool ProcessPlainTextDataChunk( int usecTimeSinceLast, RecvPacketContext_t &ctx );
+	void TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum );
+	void TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum );
+	void TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum );
+	void TEST_TriggerSentinelDesync( int64 nNewMaxRecvPktNum );
 
 	/// Called when we receive an (end-to-end) packet with a sequence number
 	void RecvNonDataSequencedPacket( int64 nPktNum, SteamNetworkingMicroseconds usecNow );
